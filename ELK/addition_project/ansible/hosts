@@ -1,0 +1,5 @@
+[staging_servers]
+ubuntu ansible_host=10.0.12.66
+
+[staging_servers:vars]
+ansible_user=ubuntu

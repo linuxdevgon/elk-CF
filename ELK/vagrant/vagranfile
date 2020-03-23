@@ -1,0 +1,28 @@
+Vagrant.configure("2") do |config|
+  config.vm.define "jenkins" do |jenkins|
+    jenkins.vm.box = "ubuntu/xenial64"
+    jenkins.vm.hostname = 'jenkinsmaster'
+    jenkins.vm.provision "shell", path: "jenkins_install.sh"
+    jenkins.vm.network :private_network, ip: "192.168.200.101"
+    jenkins.vm.network :forwarded_port, guest: 8080, host: 8080
+    jenkins.ssh.forward_agent = true
+    jenkins.vm.provider :virtualbox do |v|
+      
+      v.customize ["modifyvm", :id, "--memory", 1800]
+      v.customize ["modifyvm", :id, "--name", "jenkins"]
+    end
+end
+ config.vm.define "master" do |master|
+    master.vm.box = "ubuntu/xenial64"
+    master.vm.hostname = 'swarmmaster'
+    master.vm.provision "shell", path: "docker_install.sh"
+    master.ssh.forward_agent = true
+    master.vm.network :private_network, ip: "192.168.200.102"
+	
+
+    master.vm.provider :virtualbox do |v|
+      v.customize ["modifyvm", :id, "--memory", 3000]
+      v.customize ["modifyvm", :id, "--name", "master"]
+    end
+  end
+end

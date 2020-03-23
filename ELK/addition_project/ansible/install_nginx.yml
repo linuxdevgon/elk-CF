@@ -1,0 +1,13 @@
+---
+- hosts: all
+  become:
+    true
+  become_method:
+    sudo
+  tasks:
+    - name: install the latest version
+      apt: name=nginx state=latest
+    - name: start nginx
+      service:
+          name: nginx
+          state: started

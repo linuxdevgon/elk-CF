@@ -1,0 +1,20 @@
+
+filebeat.inputs:
+- type: log
+  enabled: true
+  paths:
+
+      - /usr/share/filebeat/nginx/error.log
+
+  fields:
+    type: nginx_access
+  fields_under_root: true
+  scan_frequency: 5s
+
+output.logstash:
+  hosts: ["logstash:5044"]
+
+xpack.monitoring:
+  enabled: true
+  elasticsearch:
+    hosts: ["http://elasticsearch:9200"]

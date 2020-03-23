@@ -1,0 +1,525 @@
+---
+
+AWSTemplateFormatVersion: 2010-09-09
+Description: "Network: VPC, Subnets + RouteTables, Internet + NAT Gateways upda"
+
+
+Metadata:
+ AWS::CloudFormation::Interface:
+    ParameterGroups:
+      -
+        Label:
+          default: "Network Configuration"
+        Parameters:
+          - Environment
+          - VPCBlock
+
+      -
+        Label:
+          default: "Subnets CIDR Blocks"
+        Parameters:
+          - PublicSubnetACIDR
+          - PublicSubnetBCIDR
+          - PrivateSubnetACIDR
+          - PrivateSubnetBCIDR
+
+      -
+        Label:
+          default: "Bastion Configuration"
+        Parameters:
+          - EC2KeyPair
+          - InstanceType
+
+Parameters:
+  Environment:
+    Type: String
+    Default: "web-Prod"
+
+  VPCName:
+    Type: String
+    Default: 'VPCProject'
+
+  VPCBlock:
+    Type: String
+    Default: '10.0.0.0/16'
+
+
+  PublicSubnetACIDR:
+    Type: String
+    Default: '10.0.10.0/24'
+    Description: "Public Subnet-A CIDR"
+
+  PublicSubnetBCIDR:
+    Type: String
+    Default: '10.0.20.0/24'
+    Description: "Public Subnet-B CIDR"
+
+  PrivateSubnetACIDR:
+    Type: String
+    Default: '10.0.11.0/24'
+    Description: "Private Subnet-A CIDR"
+
+  PrivateSubnetBCIDR:
+    Type: String
+    Default: '10.0.21.0/24'
+    Description: "Public Subnet-B CIDR"
+
+  MaxSizeASG:
+    Description: "Enter the Max Size for the ASG"
+    Type: String
+
+  MinSizeASG:
+    Description: "Enter the Min Size for the ASG"
+    Type: String
+
+  DesiredCapacityASG:
+    Description: "Enter the desired capacity for the ASG"
+    Type: String
+
+  KeyName:
+    Description: "EC2 instance key name"
+    Type: String
+
+  InstanceType:
+    Description: "EC2 instance type"
+    Type: String
+    Description: Select an instance type
+    AllowedValues:
+      - t2.micro
+      - t2.small
+      - t2.medium
+      - t2.large
+  EnvironmentName:
+    Description: "The name of LoadBalancer"
+    Type: String
+
+  LoadBalancerCertificateARN:
+    Type: String
+    Default:  arn:aws:acm:us-east-2:893702294666:certificate/3ec181cb-c2ce-4429-a062-ea4fbd777955
+    Description: Enter certificate ARN
+
+  # PublicIP:
+  #   Type: String
+  #   Description: Public IP address from which to restrict traffic from (e.g., 12.34.56.78/32)
+  #   AllowedPattern: ^(([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])\.){3}([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])(\/([0-9]|[1-2][0-9]|3[0-2]))$
+  #   ConstraintDescription: Value must be in the format of <ip address>/<cidr>
+
+Mappings:
+    RegionMap:
+      us-east-1:
+        "AMI": "ami-1853ac65"
+      us-east-2:
+        "AMI": "ami-25615740"
+      us-west-1:
+        "AMI": "ami-bf5540df"
+      us-west-2:
+        "AMI": "ami-d874e0a0"
+
+Resources:
+  AutoScalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      AutoScalingGroupName: Garretts Cfn Autoscaling Group
+      Cooldown: 120
+      DesiredCapacity:
+        Ref: DesiredCapacityASG
+      LaunchConfigurationName: !Ref 'LaunchConfig'
+      MaxSize:
+        Ref: MaxSizeASG
+      MinSize:
+        Ref: MinSizeASG
+      Tags:
+        -
+          Key: Name
+          Value: LinuxBastionHost
+          PropagateAtLaunch: 'true'
+      VPCZoneIdentifier:
+
+        - !Ref 'PublicSubnet1'
+        - !Ref 'PublicSubnet2'
+  LaunchConfig:
+    Type: AWS::AutoScaling::LaunchConfiguration
+    Properties:
+      KeyName:
+        Ref: KeyName
+      ImageId: !FindInMap [ RegionMap, !Ref "AWS::Region", AMI ]
+      SecurityGroups:
+        - !Ref 'SSHSecurityGroup'
+      InstanceType:
+        Ref: "InstanceType"
+      UserData:
+          'Fn::Base64': !Sub |
+            #!/bin/bash
+            yum update -y
+
+################################################
+
+  myDNS:
+    Type: AWS::Route53::RecordSetGroup
+    Properties:
+      HostedZoneName: linuxdevops.space.
+      Comment: Zone apex alias targeted to LoadBalancer LoadBalancer.
+      RecordSets:
+      - Name: linuxdevops.space.
+        Type: A
+        AliasTarget:
+          HostedZoneId: !GetAtt 'LoadBalancer.CanonicalHostedZoneID'
+          DNSName: !GetAtt 'LoadBalancer.DNSName'
+        # HostedZoneId: !Ref HostedZone
+
+
+  # HostedZone: 
+  #   Type: "AWS::Route53::HostedZone"
+  #   Properties: 
+  #     HostedZoneConfig: 
+  #       Comment: 'My hosted zone for linuxdevops.space.'
+  #     Name: 'linuxdevops.space.'
+
+
+################################################
+
+  LoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: !Ref EnvironmentName
+      Subnets:
+        - !Ref 'PublicSubnet1'
+        - !Ref 'PublicSubnet2'
+      SecurityGroups:
+        - !Ref 'SSHSecurityGroup'
+      Tags:
+        - Key: Name
+          Value: !Ref EnvironmentName
+
+  HttpListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions:
+      - TargetGroupArn: !Ref TargetGroupHTTP
+        Type: forward
+      LoadBalancerArn: !Ref LoadBalancer
+      Port: 80
+      Protocol: HTTP
+
+
+  HttpsListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions:
+      - TargetGroupArn: !Ref TargetGroupHTTP
+        Type: forward
+      LoadBalancerArn: !Ref LoadBalancer
+      Port: 443
+      Protocol: HTTPS
+      Certificates:
+        - CertificateArn: !Ref LoadBalancerCertificateARN
+
+
+
+    ###########################################################
+    # Properties:
+    #   LoadBalancerArn: !Ref LoadBalancer
+    #   Port: 80
+    #   Protocol: HTTP
+    #   DefaultActions:
+    #    - Type: forward
+    #      TargetGroupArn: !Ref TargetGroup
+
+
+  TargetGroupHTTP:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: MyTargetsApplication
+      VpcId: !Ref myVPC
+      Port: 80 # Порт, по которому получают трафик
+      Protocol: HTTP #Протокол, используемый для маршрутизации
+      Targets:
+        - Id: !Ref WebInstance1
+        - Id: !Ref WebInstance2
+#        - Id: !Ref WebInstance2
+      TargetType: instance #Targets are specified by instance ID. This is the default value. If the
+            #target group protocol is UDP or TCP_UDP, the target type must be instance.
+      Matcher: # Check to work
+        HttpCode: 200
+      HealthCheckIntervalSeconds: 10
+      HealthCheckPath: /
+      HealthCheckProtocol: HTTP
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 2
+
+
+################################################
+################################################
+
+  WebInstance1:
+    Type: AWS::EC2::Instance
+    Properties:
+#      AvailabilityZone: us-east-2a
+      InstanceType: t2.micro
+      ImageId: ami-0fc20dd1da406780b
+      KeyName: 123
+      NetworkInterfaces:
+          - AssociatePublicIpAddress: 'true'
+            DeviceIndex: '0'
+            SubnetId: !Ref PublicSubnet1
+            GroupSet:
+              - !Ref SSHSecurityGroup
+      UserData:
+          'Fn::Base64': !Sub |
+            #!/bin/bash
+            sudo apt -y update
+            sudo apt -y install nginx
+            cd /var/www/html/
+            sudo touch index.html
+            sudo chown ubuntu index.html
+            PublicIP=$(curl ipinfo.io/ip)
+            sudo echo "<html><h1>Web instance with Public IP: $PublicIP </h1></html>"> /var/www/html/index.html
+            sudo service nginx restart
+      Tags:
+            - Key: Name
+              Value:   WebInstanceHTTP
+
+
+  WebInstance2:
+    Type: AWS::EC2::Instance
+    Properties:
+#      AvailabilityZone: us-east-2a
+      InstanceType: t2.micro
+      ImageId: ami-0fc20dd1da406780b
+      KeyName: 123
+      NetworkInterfaces:
+          - AssociatePublicIpAddress: 'true'
+            DeviceIndex: '0'
+            SubnetId: !Ref PublicSubnet2
+            GroupSet:
+              - !Ref SSHSecurityGroup
+      UserData:
+          'Fn::Base64': !Sub |
+            #!/bin/bash
+            sudo apt -y update
+            sudo apt -y install nginx
+            cd /var/www/html/
+            sudo touch index.html
+            sudo chown ubuntu index.html
+            PublicIP=$(curl ipinfo.io/ip)
+            sudo echo "<html><h1>Web instance with Public IP: $PublicIP </h1></html>"> /var/www/html/index.html
+            sudo service nginx restart
+      Tags:
+            - Key: Name
+              Value:   WebInstanceHTTPS
+
+
+
+
+
+################################################
+################################################
+
+  SSHSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      VpcId:
+         Ref: myVPC
+      GroupDescription: Enable SSH access vai port 22
+      SecurityGroupIngress:
+      - CidrIp: 0.0.0.0/0
+        IpProtocol: tcp
+        FromPort: 22
+        ToPort: 22
+      - CidrIp: 0.0.0.0/0
+        IpProtocol: tcp
+        FromPort: 80
+        ToPort: 80
+      - CidrIp: 0.0.0.0/0
+        IpProtocol: tcp
+        FromPort: 443
+        ToPort: 443
+      SecurityGroupEgress:
+      - CidrIp: 0.0.0.0/0
+        IpProtocol: '-1'
+
+
+
+
+################################################################
+  myVPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref VPCBlock
+      EnableDnsSupport: 'true'
+      EnableDnsHostnames: 'true'
+      Tags:
+         - Key: Name
+           Value: !Ref VPCName
+
+  myInternetGateway:
+    Type: AWS::EC2::InternetGateway
+    DependsOn: myVPC
+    Properties:
+     Tags:
+        - Key: Name
+          Value: !Ref Environment
+################################################################
+
+  VPCGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref myVPC
+      InternetGatewayId: !Ref myInternetGateway
+
+  EIP1:
+    Type: "AWS::EC2::EIP"
+    DependsOn : VPCGatewayAttachment
+    Properties:
+     Domain: !Ref myVPC
+
+  EIP2:
+    Type: "AWS::EC2::EIP"
+    DependsOn : VPCGatewayAttachment
+    Properties:
+     Domain: !Ref myVPC
+
+  NATGatewayA:
+    DependsOn: VPCGatewayAttachment
+    Type: AWS::EC2::NatGateway
+    Properties:
+     SubnetId: !Ref PublicSubnet1
+     AllocationId:  !GetAtt EIP1.AllocationId
+     Tags:
+       - Key: Name
+         Value: NATGateway-A
+
+  NATGatewayB:
+    DependsOn: VPCGatewayAttachment
+    Type: AWS::EC2::NatGateway
+    Properties:
+     SubnetId: !Ref PublicSubnet2
+     AllocationId:  !GetAtt EIP2.AllocationId
+     Tags:
+       - Key: Name
+         Value: NATGateway-B
+################################################
+# Route Table attach to VPC
+  RouteTableForPublicSubnet:
+    Type: "AWS::EC2::RouteTable"
+    Properties:
+     VpcId: !Ref myVPC
+     Tags:
+      - Key: Name
+        Value: !Join [ " ", [ !Ref Environment, "PublicRouteTable" ] ]
+
+##################################################
+# Creation and Attachment of Routes for Route Table
+  RoutesForPublicRouteTable:
+    Type: "AWS::EC2::Route"
+    DependsOn: VPCGatewayAttachment
+    Properties:
+     DestinationCidrBlock: 0.0.0.0/0
+     GatewayId: !Ref myInternetGateway
+     RouteTableId: !Ref RouteTableForPublicSubnet
+
+  #====== Private RouteTables ===========
+  RouteTableForPrivateSubnetA:
+    Type: "AWS::EC2::RouteTable"
+    Properties:
+     VpcId: !Ref myVPC
+     Tags:
+      - Key: Name
+        Value: !Join [ " ", [ !Ref Environment, "PrivateRouteTableA" ] ]
+
+  RouteTableForPrivateSubnetB:
+    Type: "AWS::EC2::RouteTable"
+    Properties:
+     VpcId: !Ref myVPC
+     Tags:
+      - Key: Name
+        Value: !Join [ " ", [ !Ref Environment, "PrivateRouteTableB" ] ]
+
+
+  RoutesForPrivateRouteTableA:
+    Type: AWS::EC2::Route
+    DependsOn: NATGatewayA
+    Properties:
+     DestinationCidrBlock: 0.0.0.0/0
+     RouteTableId: !Ref RouteTableForPrivateSubnetA
+     NatGatewayId: !Ref NATGatewayA
+
+  RoutesForPrivateRouteTableB:
+    Type: AWS::EC2::Route
+    DependsOn: NATGatewayB
+    Properties:
+     DestinationCidrBlock: 0.0.0.0/0
+     RouteTableId: !Ref RouteTableForPrivateSubnetB
+     NatGatewayId: !Ref NATGatewayB
+#====== Associate Public Route for Public Subnets
+  RouteAssociationPublicA:
+    Type: "AWS::EC2::SubnetRouteTableAssociation"
+    Properties:
+     RouteTableId: !Ref RouteTableForPublicSubnet
+     SubnetId: !Ref PublicSubnet1
+  RouteAssociationPublicB:
+    Type: "AWS::EC2::SubnetRouteTableAssociation"
+    Properties:
+      RouteTableId: !Ref RouteTableForPublicSubnet
+      SubnetId: !Ref PublicSubnet2
+#===== Associate Private Route for Private Subnets
+
+  RouteAssociationPrivateA:
+    Type: "AWS::EC2::SubnetRouteTableAssociation"
+    Properties:
+     RouteTableId: !Ref RouteTableForPrivateSubnetA
+     SubnetId: !Ref PrivateSubnet1
+
+  RouteAssociationPrivateB:
+    Type: "AWS::EC2::SubnetRouteTableAssociation"
+    Properties:
+      RouteTableId: !Ref RouteTableForPrivateSubnetB
+      SubnetId: !Ref PrivateSubnet2
+
+
+##=========All Subnets===============##
+  PublicSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref myVPC
+      AvailabilityZone: !Select [ 0, "Fn::GetAZs": { Ref: "AWS::Region" } ]
+      CidrBlock: !Ref "PublicSubnetACIDR"
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Join [ "", [ !Ref Environment, "-Public-A" ] ]
+
+  PrivateSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref myVPC
+      AvailabilityZone: !Select [ 0, "Fn::GetAZs": { Ref: "AWS::Region" } ]
+      CidrBlock: !Ref "PrivateSubnetACIDR"
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Join [ "", [ !Ref Environment, "-Private-A" ] ]
+
+  PublicSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref myVPC
+      AvailabilityZone: !Select [ 1, "Fn::GetAZs": { Ref: "AWS::Region" } ]
+      CidrBlock: !Ref "PublicSubnetBCIDR"
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Join [ "", [ !Ref Environment, "-Public-B" ] ]
+
+
+  PrivateSubnet2:
+    Type: "AWS::EC2::Subnet"
+    Properties:
+      VpcId: !Ref myVPC
+      AvailabilityZone: !Select [ 1, "Fn::GetAZs": { Ref: "AWS::Region" } ]
+      CidrBlock: !Ref "PrivateSubnetBCIDR"
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Join [ "", [ !Ref Environment, "-Private-B" ] ]
